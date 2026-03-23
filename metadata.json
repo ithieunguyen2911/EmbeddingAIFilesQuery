@@ -1,0 +1,5 @@
+{
+  "name": "Gemini File Query Engine",
+  "description": "An OOP-based application to interact and query information from any file using Gemini Embeddings 2 and RAG.",
+  "requestFramePermissions": []
+}
