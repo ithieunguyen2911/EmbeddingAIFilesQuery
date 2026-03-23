@@ -32,22 +32,38 @@ export class GeminiService {
   }
 
   /**
-   * Generates a response based on a query and context.
+   * Generates a response based on a query and context, potentially including images.
    */
-  async generateResponse(query: string, context: string): Promise<string> {
-    const response = await this.ai.models.generateContent({
-      model: this.chatModel,
-      contents: [
-        {
-          text: `You are a helpful assistant. Use the provided context to answer the user's question accurately. If the answer is not in the context, say you don't know based on the document.
+  async generateResponse(query: string, context: string, images: string[] = []): Promise<string> {
+    const parts: any[] = [
+      {
+        text: `You are a helpful assistant. Use the provided context (text and images) to answer the user's question accurately. 
+        If the answer is not in the context, say you don't know based on the document.
+        If you refer to something in an image, mention which image or page it is from.
           
-Context:
+Context Text:
 ${context}
 
 Question:
 ${query}`,
+      },
+    ];
+
+    // Add images to the parts
+    for (const base64Image of images) {
+      const data = base64Image.split(',')[1];
+      const mimeType = base64Image.split(';')[0].split(':')[1];
+      parts.push({
+        inlineData: {
+          data,
+          mimeType,
         },
-      ],
+      });
+    }
+
+    const response = await this.ai.models.generateContent({
+      model: this.chatModel,
+      contents: [{ parts }],
     });
     return response.text || "I'm sorry, I couldn't generate a response.";
   }

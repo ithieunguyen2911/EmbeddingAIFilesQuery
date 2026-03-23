@@ -26,6 +26,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  images?: string[];
 }
 
 export default function App() {
@@ -64,7 +65,7 @@ export default function App() {
         setMessages([{
           id: 'welcome',
           role: 'assistant',
-          content: `Successfully processed **${file.name}**. You can now ask me anything about its content!`,
+          content: `Successfully processed **${file.name}**. I've also captured page images, so I can "see" charts and diagrams!`,
           timestamp: new Date()
         }]);
       }
@@ -105,12 +106,17 @@ export default function App() {
 
     try {
       if (chatEngineRef.current) {
-        const response = await chatEngineRef.current.query(input);
+        const result = await chatEngineRef.current.query(input);
+        
+        // Extract unique images from sources
+        const uniqueImages = Array.from(new Set(result.sources.map(s => s.image).filter(Boolean))) as string[];
+
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: response,
-          timestamp: new Date()
+          content: result.answer,
+          timestamp: new Date(),
+          images: uniqueImages
         };
         setMessages(prev => [...prev, assistantMessage]);
       }
@@ -261,6 +267,24 @@ export default function App() {
                       <div className="prose prose-sm max-w-none prose-headings:text-[#1A1A1A] prose-a:text-[#1A1A1A]">
                         <ReactMarkdown>{m.content}</ReactMarkdown>
                       </div>
+                      
+                      {m.images && m.images.length > 0 && (
+                        <div className="mt-4 grid grid-cols-1 gap-2">
+                          {m.images.map((img, idx) => (
+                            <div key={idx} className="relative group">
+                              <img 
+                                src={img} 
+                                alt={`Source page ${idx + 1}`} 
+                                className="rounded-lg border border-[#E5E5E5] max-h-64 object-contain bg-white"
+                                referrerPolicy="no-referrer"
+                              />
+                              <div className="absolute bottom-2 right-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
+                                Source Page
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <span className="text-[10px] text-[#999999] mt-1 uppercase tracking-tighter">
                       {m.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
