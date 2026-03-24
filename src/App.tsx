@@ -36,9 +36,12 @@ export default function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [currentFile, setCurrentFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [projectFiles, setProjectFiles] = useState<File[]>([]);
   
   const chatEngineRef = useRef<ChatEngine | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const addFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     chatEngineRef.current = new ChatEngine();
@@ -53,6 +56,15 @@ export default function App() {
   const onDrop = async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (!file) return;
+
+    // Validate file type
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    const supportedFormats = ['pdf', 'txt', 'md', 'csv'];
+    
+    if (!extension || !supportedFormats.includes(extension)) {
+      setError(`File format not supported. Please use: ${supportedFormats.join(', ').toUpperCase()}`);
+      return;
+    }
 
     setIsUploading(true);
     setError(null);
@@ -70,8 +82,19 @@ export default function App() {
         }]);
       }
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
       console.error('Error processing file:', err);
-      setError('Failed to process the file. Please make sure it is a valid text or PDF file.');
+      
+      // Provide specific error messages
+      if (errorMessage.includes('Failed to fetch')) {
+        setError('Network error: Unable to fetch PDF worker. Check your internet connection.');
+      } else if (errorMessage.includes('Invalid PDF')) {
+        setError('The PDF file is corrupted or invalid. Please try another file.');
+      } else if (errorMessage.includes('FileReader')) {
+        setError('Could not read the file. Please check the file is readable.');
+      } else {
+        setError(`Failed to process the file: ${errorMessage}`);
+      }
       setCurrentFile(null);
     } finally {
       setIsUploading(false);
@@ -88,6 +111,64 @@ export default function App() {
       'text/csv': ['.csv'],
     }
   });
+
+  // Additional file dropzone for adding more documents
+  // Handle file input for adding files to project
+  const handleAddFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.currentTarget.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    const supportedFormats = ['pdf', 'txt', 'md', 'csv'];
+    
+    if (!extension || !supportedFormats.includes(extension)) {
+      setError(`File format not supported. Please use: ${supportedFormats.join(', ').toUpperCase()}`);
+      return;
+    }
+
+    setIsUploading(true);
+    setError(null);
+    
+    try {
+      if (chatEngineRef.current) {
+        await chatEngineRef.current.processFileToProject(file);
+        
+        // Add file to project files list
+        setProjectFiles(prev => {
+          // Avoid duplicates
+          if (prev.some(f => f.name === file.name)) return prev;
+          return [...prev, file];
+        });
+        
+        const userMessage: Message = {
+          id: Date.now().toString(),
+          role: 'user',
+          content: `📤 Added new document: **${file.name}**`,
+          timestamp: new Date()
+        };
+        
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: `✅ Successfully added **${file.name}** to the project. You can now compare it with other documents or query across all files.`,
+          timestamp: new Date()
+        };
+        
+        setMessages(prev => [...prev, userMessage, assistantMessage]);
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+      console.error('Error adding file:', err);
+      setError(`Failed to add file: ${errorMessage}`);
+    } finally {
+      setIsUploading(false);
+      // Reset input
+      if (addFileInputRef.current) {
+        addFileInputRef.current.value = '';
+      }
+    }
+  };
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -133,6 +214,141 @@ export default function App() {
     setCurrentFile(null);
     if (chatEngineRef.current) {
       chatEngineRef.current.clearContext();
+    }
+  };
+
+  const handleSummarize = async (length: 'short' | 'medium' | 'long' = 'medium') => {
+    if (!currentFile || !chatEngineRef.current) return;
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `📝 Create a ${length} summary of this document`,
+      timestamp: new Date()
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setIsProcessing(true);
+
+    try {
+      const summary = await chatEngineRef.current.summarizeDocument(length);
+      
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: `**Document Summary (${length.toUpperCase()})**\n\n${summary}`,
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+    } catch (err) {
+      console.error('Error summarizing:', err);
+      setError('Failed to summarize the document.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleCompareDocuments = async () => {
+    if (!chatEngineRef.current) return;
+
+    const projectFiles = chatEngineRef.current.getProjectFiles(
+      chatEngineRef.current.getCurrentProject()?.id || ''
+    );
+
+    if (projectFiles.length < 2) {
+      setError('You need at least 2 files in the project to compare documents.');
+      return;
+    }
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `🔄 Compare documents in this project (${projectFiles.length} files)`,
+      timestamp: new Date()
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setIsProcessing(true);
+
+    try {
+      const fileHashes = projectFiles.map(f => f.fileHash);
+      const comparison = await chatEngineRef.current.compareDocuments(fileHashes);
+      
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: `**Document Comparison Analysis**\n\n${comparison}`,
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+    } catch (err) {
+      console.error('Error comparing:', err);
+      setError('Failed to compare documents.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleExtractKeyPoints = async () => {
+    if (!currentFile || !chatEngineRef.current) return;
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `📌 Extract key points from this document`,
+      timestamp: new Date()
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setIsProcessing(true);
+
+    try {
+      const keyPoints = await chatEngineRef.current.extractKeyPoints();
+      const formattedPoints = keyPoints.map((point, i) => `${i + 1}. ${point}`).join('\n');
+      
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: `**Key Points from Document:**\n\n${formattedPoints}`,
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+    } catch (err) {
+      console.error('Error extracting key points:', err);
+      setError('Failed to extract key points.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleExplainConcept = async (concept: string) => {
+    if (!currentFile || !chatEngineRef.current) return;
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `❓ Explain the concept: "${concept}"`,
+      timestamp: new Date()
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setIsProcessing(true);
+
+    try {
+      const explanation = await chatEngineRef.current.explainConcept(concept);
+      
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: `**Explanation: ${concept}**\n\n${explanation}`,
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+    } catch (err) {
+      console.error('Error explaining concept:', err);
+      setError('Failed to explain the concept.');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -207,15 +423,39 @@ export default function App() {
           ) : (
             <>
               <div className="space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-widest text-[#999999]">Active Document</h3>
-                <div className="p-4 bg-white border border-[#E5E5E5] rounded-2xl flex items-center gap-3 shadow-sm">
-                  <div className="p-2 bg-[#F5F5F5] rounded-lg">
-                    <FileCheck className="w-5 h-5 text-[#1A1A1A]" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium truncate text-sm">{currentFile.name}</p>
-                    <p className="text-xs text-[#666666]">{(currentFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                  </div>
+                <h3 className="text-xs font-bold uppercase tracking-widest text-[#999999]">Active Documents</h3>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {currentFile && (
+                    <div key={currentFile.name} className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-2 hover:bg-blue-100 transition-colors cursor-default">
+                      <div className="p-1.5 bg-blue-100 rounded-lg flex-shrink-0">
+                        <FileCheck className="w-4 h-4 text-blue-600" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium truncate text-xs">{currentFile.name}</p>
+                        <p className="text-[10px] text-blue-600">Primary</p>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {projectFiles.length > 0 && (
+                    <>
+                      {projectFiles.map((file) => (
+                        <div key={file.name} className="p-3 bg-white border border-[#E5E5E5] rounded-xl flex items-center gap-2 hover:bg-gray-50 transition-colors cursor-default">
+                          <div className="p-1.5 bg-[#F5F5F5] rounded-lg flex-shrink-0">
+                            <FileText className="w-4 h-4 text-[#666666]" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium truncate text-xs">{file.name}</p>
+                            <p className="text-[10px] text-[#999999]">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  
+                  {projectFiles.length === 0 && (
+                    <p className="text-xs text-[#999999] text-center py-2">Click "Add Another File" to add documents</p>
+                  )}
                 </div>
               </div>
 
@@ -235,6 +475,26 @@ export default function App() {
                 <p className="text-xs font-bold uppercase tracking-widest opacity-60">Status</p>
                 <p className="text-sm font-medium">Ready for queries</p>
               </div>
+
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => addFileInputRef.current?.click()}
+                disabled={isUploading}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium bg-[#F5F5F5] hover:bg-[#E5E5E5] text-[#1A1A1A] rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Upload className="w-4 h-4" />
+                <span>Add Another File</span>
+              </motion.button>
+
+              {/* Hidden file input */}
+              <input
+                ref={addFileInputRef}
+                type="file"
+                accept=".pdf,.txt,.md,.csv"
+                onChange={handleAddFileChange}
+                className="hidden"
+              />
             </>
           )}
         </div>
@@ -275,11 +535,12 @@ export default function App() {
                               <img 
                                 src={img} 
                                 alt={`Source page ${idx + 1}`} 
-                                className="rounded-lg border border-[#E5E5E5] max-h-64 object-contain bg-white"
+                                onClick={() => setSelectedImage(img)}
+                                className="rounded-lg border border-[#E5E5E5] max-h-64 object-contain bg-white cursor-pointer hover:opacity-90 transition-opacity"
                                 referrerPolicy="no-referrer"
                               />
                               <div className="absolute bottom-2 right-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
-                                Source Page
+                                Click to enlarge
                               </div>
                             </div>
                           ))}
@@ -306,7 +567,60 @@ export default function App() {
             </div>
 
             {/* Input */}
-            <div className="p-6 border-t border-[#E5E5E5] bg-white">
+            <div className="p-6 border-t border-[#E5E5E5] bg-white space-y-4">
+              {/* Action Buttons */}
+              <div className="flex flex-wrap gap-2">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => handleSummarize('medium')}
+                  disabled={isProcessing}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#F5F5F5] hover:bg-[#E5E5E5] text-[#1A1A1A] rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Create a summary of the document"
+                >
+                  <span>📝</span>
+                  <span>Summarize</span>
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleExtractKeyPoints}
+                  disabled={isProcessing}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#F5F5F5] hover:bg-[#E5E5E5] text-[#1A1A1A] rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Extract key points from the document"
+                >
+                  <span>📌</span>
+                  <span>Key Points</span>
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleCompareDocuments}
+                  disabled={isProcessing}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#F5F5F5] hover:bg-[#E5E5E5] text-[#1A1A1A] rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Compare multiple documents in project"
+                >
+                  <span>🔄</span>
+                  <span>Compare</span>
+                </motion.button>
+
+                <div className="flex-1" />
+
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={clearChat}
+                  disabled={isProcessing}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#FFE8E8] hover:bg-[#FFD0D0] text-[#CC0000] rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Clear chat and start fresh"
+                >
+                  <Trash2 size={16} />
+                  <span>Clear</span>
+                </motion.button>
+              </div>
+
               <form 
                 onSubmit={handleSendMessage}
                 className="relative flex items-center"
@@ -349,6 +663,40 @@ export default function App() {
               <h3 className="text-xl font-medium tracking-tight">Analyzing Document</h3>
               <p className="text-sm text-[#666666]">Generating embeddings with Gemini Embedding 2...</p>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Image Zoom Modal */}
+      <AnimatePresence>
+        {selectedImage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setSelectedImage(null)}
+            className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative max-w-4xl max-h-[90vh] rounded-2xl overflow-hidden bg-white shadow-2xl"
+            >
+              <button
+                onClick={() => setSelectedImage(null)}
+                className="absolute top-4 right-4 p-2 bg-white rounded-full hover:bg-gray-100 transition-colors z-10 shadow-lg"
+              >
+                <X className="w-6 h-6 text-[#1A1A1A]" />
+              </button>
+              <img
+                src={selectedImage}
+                alt="Enlarged document page"
+                className="w-full h-full object-contain"
+                referrerPolicy="no-referrer"
+              />
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
